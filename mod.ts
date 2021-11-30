@@ -76,6 +76,7 @@ function NewTemplate(script: string): Template {
         $$ESCAPE: escape,
       };
       const src = `(async() => {
+        const locals = ${JSON.stringify(params)};
         try { ${script} } catch (error) { $$ERROR(error) }
         $$FINISHED();
       })();`;
