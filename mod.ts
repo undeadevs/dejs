@@ -31,6 +31,10 @@ interface Template {
   (params: Params): Promise<string>;
 }
 
+interface Sections {
+  [key: string]: () => void
+}
+
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8");
 
@@ -40,11 +44,17 @@ class StringReader extends Buffer {
   }
 }
 
-async function include(path: string, params: Params): Promise<string> {
+export async function include(path: string, params: Params): Promise<string> {
   const result = await renderFile(path, params);
   const buf = new Buffer();
   await buf.readFrom(result);
   return await bufToStr(buf);
+}
+
+export async function extend(path: string, params: Params, initSections: (sections: Sections) => void) {
+  const section = {};
+  initSections(section);
+  return await include(path, { ...params, section });
 }
 
 function sanitize(str: string): string {
@@ -67,16 +77,31 @@ function NewTemplate(script: string): Template {
   return async (params: Params): Promise<string> => {
     const output: Array<string> = [];
     await new Promise((resolve, reject) => {
+      const yieldStrings: string[] = [];
+      if ((typeof params['section']==='object') && !Array.isArray(params['section'] && !(params['section'] instanceof Function))) {
+        for (const key in params['section']) {
+          if (params['section'][key] instanceof Function) {
+            yieldStrings.push(`'${key}':${params['section'][key].toString()}`)
+          }
+        }
+        delete params['section'];
+      }
+      const locals = { ...params };
       const args = {
         include,
+        extend,
         ...params,
+        locals,
         $$OUTPUT: output,
         $$FINISHED: resolve,
         $$ERROR: reject,
         $$ESCAPE: escape,
       };
       const src = `(async() => {
-        const locals = ${JSON.stringify(params)};
+        const yield = (sectionName)=>{
+          const section = {${yieldStrings.join(',\n')}};
+          return section[sectionName] instanceof Function ? section[sectionName]() : undefined;
+        };
         try { ${script} } catch (error) { $$ERROR(error) }
         $$FINISHED();
       })();`;
@@ -146,17 +171,15 @@ export async function compile(reader: Reader): Promise<Template> {
         switch (readMode) {
           case ReadMode.Raw:
             statements.push(
-              `;$$OUTPUT.push(${
-                removeLastSemi(await bufToStr(statementBuf))
+              `;$$OUTPUT.push(${removeLastSemi(await bufToStr(statementBuf))
               });`,
             );
             break;
           case ReadMode.Escaped:
             statements.push(
-              `;$$OUTPUT.push($$ESCAPE(${
-                removeLastSemi(
-                  await bufToStr(statementBuf),
-                )
+              `;$$OUTPUT.push($$ESCAPE(${removeLastSemi(
+                await bufToStr(statementBuf),
+              )
               }));`,
             );
             break;
